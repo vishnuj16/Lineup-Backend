@@ -6,7 +6,7 @@ from django.contrib.auth.models import User
 class Player(models.Model):
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     # game_room = models.ForeignKey(Room, related_name="players", on_delete=models.CASCADE)
-    unique_id = models.CharField(max_length=100)
+    unique_id = models.CharField(max_length=100, default="")
     score = models.IntegerField(default=0)
 
 class Room(models.Model):
@@ -26,6 +26,14 @@ class Round(models.Model):
     pack_ranking = models.JSONField(default=dict)
     pack_score = models.IntegerField(default=0)
     round_number = models.IntegerField()
+
+class GameState(models.Model):
+    room = models.ForeignKey(Room, on_delete=models.CASCADE)
+    current_round = models.IntegerField(default=1)
+    game_over = models.BooleanField(default=False)
+    winner = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    wolfed_users = models.JSONField(default=list)
+    round_status = models.CharField(max_length=50, default="waiting")  # waiting, in_progress, completed
 
 class WolfList(models.Model):
     room = models.ForeignKey(Room, on_delete=models.CASCADE)

@@ -2,42 +2,78 @@
 import json
 from asgiref.sync import async_to_sync
 from channels.generic.websocket import WebsocketConsumer
+from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from channels.db import database_sync_to_async
 from .models import Room, Player, Round, WolfList
 from django.contrib.auth.models import User
 import random
 import asyncio
 
-class GameLobbyConsumer(WebsocketConsumer):
-    """
-    Consumer for handling game lobby events (game start notification)
-    """
-    def connect(self):
+class GameLobbyConsumer(AsyncJsonWebsocketConsumer):
+    async def connect(self):
+        self.user = self.scope["user"]
+        print(f"User connecting: {self.user}")
+
+        if self.user.is_anonymous:
+            print("User is anonymous, closing connection.")
+            await self.close()
+            return
+
+        print("Connection accepted!")
+        await self.accept()
+
         self.room_code = self.scope['url_route']['kwargs']['room_code']
         self.room_group_name = f'lobby_{self.room_code}'
         
-        # Join room group
-        async_to_sync(self.channel_layer.group_add)(
+        # Join room group (Await directly)
+        await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
         
-        self.accept()
+        # Send notification that the user has joined
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'player_joined',
+                'player': self.user.username
+            }
+        )
+
+        
+        # After join notification, send updated player count to everyone
     
-    def disconnect(self, close_code):
-        # Leave room group
-        async_to_sync(self.channel_layer.group_discard)(
+    @database_sync_to_async
+    def get_players_in_room(self):
+        """Get list of players in the current room"""
+        
+    
+    async def disconnect(self, close_code):
+        if not hasattr(self, 'user') or self.user.is_anonymous:
+            return
+        
+        # Leave room group (Await directly)
+        await self.channel_layer.group_discard(
             self.room_group_name,
             self.channel_name
         )
-    
-    # Receive message from WebSocket
-    def receive(self, text_data):
+        
+        # Notify others that player has left
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'player_left',
+                'player': self.user.username
+            }
+        )
+
+    async def receive(self, text_data):
         data = json.loads(text_data)
         message_type = data.get('type')
+        print(f"Received message: {data}")
         
         if message_type == 'game_start':
-            # Send message to room group
-            async_to_sync(self.channel_layer.group_send)(
+            await self.channel_layer.group_send(
                 self.room_group_name,
                 {
                     'type': 'game_start_message',
@@ -47,61 +83,84 @@ class GameLobbyConsumer(WebsocketConsumer):
         
         if message_type == 'player_joined':
             player_id = data.get('player')
-            try:
-                player = Player.objects.get(id=player_id)
-                # Send message to room group
-                async_to_sync(self.channel_layer.group_send)(
+            player = await self.get_player(player_id)
+            if player:
+                await self.channel_layer.group_send(
                     self.room_group_name,
                     {
                         'type': 'player_joined',
-                        'player': player.user.username
+                        'player': player
                     }
                 )
-            except Player.DoesNotExist:
-                pass
 
-    def player_joined(self, event):
+    @database_sync_to_async
+    def get_player(self, player_id):
+        try:
+            player = Player.objects.get(id=player_id)
+            return player.user.username
+        except Player.DoesNotExist:
+            return None
+
+
+    async def player_joined(self, event):
         # Send message to WebSocket
-        self.send(text_data=json.dumps({
+        print("Sending msg ", event['player'])
+        await self.send_json({
             'type': 'player_joined',
             'player': event['player']
-        }))
+        })
+    
+    async def player_left(self, event):
+        # Send message to WebSocket when a player leaves
+        await self.send_json({
+            'type': 'player_left',
+            'player': event['player']
+        })
     
     # Receive message from room group
-    def game_start_message(self, event):
+    async def game_start_message(self, event):
         # Send message to WebSocket
-        self.send(text_data=json.dumps({
+        await self.send_json({
             'type': 'game_start',
             'message': event['message']
-        }))
+        })
 
 
-class GameplayConsumer(WebsocketConsumer):
-    """
-    Consumer for handling actual gameplay events
-    """
-    def connect(self):
+class GameplayConsumer(AsyncJsonWebsocketConsumer):
+
+    async def connect(self):
+        self.user = self.scope["user"]
+        print(f"User connecting: {self.user}")
+
+        if self.user.is_anonymous:
+            print("User is anonymous, closing connection.")
+            await self.close()
+            return
+
+        print("Connection accepted!")
+        await self.accept()
+
         self.room_code = self.scope['url_route']['kwargs']['room_code']
-        self.room_group_name = f'game_{self.room_code}'
-        self.user = self.scope['user']
+        self.room_group_name = f'lobby_{self.room_code}'
         
-        # Join room group
-        async_to_sync(self.channel_layer.group_add)(
+        # Join room group (Await directly)
+        await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
-        
-        self.accept()
     
-    def disconnect(self, close_code):
-        # Leave room group
-        async_to_sync(self.channel_layer.group_discard)(
+    async def disconnect(self, close_code):
+        if not hasattr(self, 'user') or self.user.is_anonymous:
+            return
+        
+        # Leave room group (Await directly)
+        await self.channel_layer.group_discard(
             self.room_group_name,
             self.channel_name
         )
     
     # Receive message from WebSocket
-    def receive(self, text_data):
+    async def receive(self, text_data):
         data = json.loads(text_data)
         message_type = data.get('type')
         
@@ -119,7 +178,7 @@ class GameplayConsumer(WebsocketConsumer):
             round_number = data.get('round_number')
             self.submit_pack_order(order, round_number)
     
-    def start_round(self, round_number):
+    async def start_round(self, round_number):
         try:
             room = Room.objects.get(code=self.room_code)
             # Check if the user is the host
@@ -170,13 +229,13 @@ class GameplayConsumer(WebsocketConsumer):
                 {
                     'type': 'round_start_message',
                     'round_number': round_number,
-                    'wolf_id': current_round.wolf.id,
+                    'wolf_id': current_round.wolf.username,
                     'question': current_round.question
                 }
             )
             
             # Start wolf timer (2 minutes)
-            async_to_sync(self.channel_layer.group_send)(
+            await self.channel_layer.group_send (
                 self.room_group_name,
                 {
                     'type': 'wolf_timer_message',
@@ -196,7 +255,7 @@ class GameplayConsumer(WebsocketConsumer):
                 'message': 'Round not found'
             }))
     
-    def submit_wolf_order(self, order, round_number):
+    async def submit_wolf_order(self, order, round_number):
         try:
             room = Room.objects.get(code=self.room_code)
             current_round = Round.objects.get(room=room, round_number=round_number)
@@ -214,7 +273,7 @@ class GameplayConsumer(WebsocketConsumer):
             current_round.save()
             
             # Notify everyone that the wolf has submitted their order
-            async_to_sync(self.channel_layer.group_send)(
+            await self.channel_layer.group_send (
                 self.room_group_name,
                 {
                     'type': 'wolf_order_message',
@@ -234,7 +293,7 @@ class GameplayConsumer(WebsocketConsumer):
                 'message': 'Round not found'
             }))
     
-    def submit_pack_order(self, order, round_number):
+    async def submit_pack_order(self, order, round_number):
         try:
             room = Room.objects.get(code=self.room_code)
             current_round = Round.objects.get(room=room, round_number=round_number)
@@ -250,10 +309,10 @@ class GameplayConsumer(WebsocketConsumer):
                     valid_submitter = True
             
             if not valid_submitter:
-                self.send(text_data=json.dumps({
+                self.send({
                     'type': 'error',
                     'message': 'You are not authorized to submit the pack order'
-                }))
+                })
                 return
             
             # Save the pack's ranking
@@ -280,7 +339,7 @@ class GameplayConsumer(WebsocketConsumer):
             # Wolf never gets points
             
             # Notify everyone about the results
-            async_to_sync(self.channel_layer.group_send)(
+            await self.channel_layer.group_send (
                 self.room_group_name,
                 {
                     'type': 'round_result_message',
@@ -303,37 +362,37 @@ class GameplayConsumer(WebsocketConsumer):
             }))
     
     # Receive message from room group
-    def round_start_message(self, event):
+    async def round_start_message(self, event):
         # Send message to WebSocket
-        self.send(text_data=json.dumps({
+        self.send({
             'type': 'round_start',
             'round_number': event['round_number'],
             'wolf_id': event['wolf_id'],
             'question': event['question']
-        }))
+        })
     
-    def wolf_timer_message(self, event):
+    async def wolf_timer_message(self, event):
         # Send message to WebSocket
-        self.send(text_data=json.dumps({
+        self.send({
             'type': 'wolf_timer',
             'round_number': event['round_number'],
             'time': event['time']
-        }))
+        })
     
-    def wolf_order_message(self, event):
+    async def wolf_order_message(self, event):
         # Send message to WebSocket
-        self.send(text_data=json.dumps({
+        self.send({
             'type': 'wolf_order',
             'round_number': event['round_number'],
             'order': event['order']
-        }))
+        })
     
-    def round_result_message(self, event):
+    async def round_result_message(self, event):
         # Send message to WebSocket
-        self.send(text_data=json.dumps({
+        self.send({
             'type': 'round_result',
             'round_number': event['round_number'],
             'wolf_order': event['wolf_order'],
             'pack_order': event['pack_order'],
             'pack_score': event['pack_score']
-        }))
+        })

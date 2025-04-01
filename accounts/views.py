@@ -5,61 +5,79 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.csrf import ensure_csrf_cookie
 import json
 
-@csrf_exempt  # Remove in production, use CSRF tokens instead
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
 def register_view(request):
-    if request.method == "POST":
-        data = json.loads(request.body)
-        email = data.get("email")
-        username = data.get("username")
-        password = data.get("password")
+    data = json.loads(request.body)
+    email = data.get("email")
+    username = data.get("username")
+    password = data.get("password")
 
-        if not username or not password or not email:
-            return JsonResponse({"error": "Username, email and password required"}, status=400)
+    if not username or not password or not email:
+        return JsonResponse({"error": "Username, email and password required"}, status=400)
 
-        if User.objects.filter(username=username).exists():
-            return JsonResponse({"error": "Username already taken"}, status=400)
-        
-        if User.objects.filter(email=email).exists():
-            return JsonResponse({"error": "Email already exists"}, status=400)
+    if User.objects.filter(username=username).exists():
+        return JsonResponse({"error": "Username already taken"}, status=400)
+    
+    if User.objects.filter(email=email).exists():
+        return JsonResponse({"error": "Email already exists"}, status=400)
 
-        user = User.objects.create_user(username=username, email=email, password=password)
-        return JsonResponse({"message": "Registration successful", "username": user.username}, status=201)
+    user = User.objects.create_user(username=username, email=email, password=password)
 
-    return JsonResponse({"error": "Invalid request"}, status=400)
+    if not user:
+        return JsonResponse({"error": "User registration failed"}, status=400)
+    
+    return JsonResponse({"message": "Registration successful", "username": user.username}, status=201)
 
-@csrf_exempt
+@api_view(['POST'])    
 def login_view(request):
-    if request.method == "POST":
-        data = json.loads(request.body)
-        username = data.get("username")
-        password = data.get("password")
+    data = json.loads(request.body)
+    username = data.get("username")
+    password = data.get("password")
 
-        user = authenticate(request, username=username, password=password)
-        if user is not None:
-            login(request, user)
-            return JsonResponse({"message": "Login successful", "username": user.username}, status=200)
-        else:
-            user = authenticate(request, email=username, password=password)
-            if user is not None:
-                login(request, user)
-                return JsonResponse({"message": "Login successful", "username": user.username}, status=200)
-            return JsonResponse({"error": "Invalid credentials"}, status=400)
+    if username is None or password is None:
+        return JsonResponse({'error': 'Please provide both username and password'}, status=400)
 
-    return JsonResponse({"error": "Invalid request"}, status=400)
+    user = authenticate(request, username=username, password=password)
 
-@csrf_exempt
-def logout_view(request):
-    if request.method == "POST":
-        logout(request)
-        return JsonResponse({"message": "Logged out successfully"}, status=200)
+    if user is None:
+        user = authenticate(request, email=username, password=password)
+        if user is None:
+            return JsonResponse({'error': 'Invalid username or password'}, status=401)
+    
+    refresh = RefreshToken.for_user(user)
+    if not refresh:
+        return JsonResponse({'error': 'Token generation failed'}, status=400)
+    return Response({
+        'message': 'User created successfully',
+        'user_id': user.id,   
+        'refresh': str(refresh),
+        'access': str(refresh.access_token),
+        'username': user.username,
+        'email': user.email,
+        'user_id': user.id,    
+    },
+    status=status.HTTP_200_OK) 
 
-    return JsonResponse({"error": "Invalid request"}, status=400)
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
 
-def user_info(request):
-    if request.user.is_authenticated:
-        return JsonResponse({"username": request.user.username, "email": request.user.email})
-    return JsonResponse({"error": "Unauthorized"}, status=401)
+    def post(self, request):
+        try:
+            refresh_token = request.data.get('refresh')
 
-@ensure_csrf_cookie
-def get_csrf_token(request):
-    return JsonResponse({'detail': 'CSRF cookie set'})
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            
+            return Response({'message': 'User logged out successfully'}, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

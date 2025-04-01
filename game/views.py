@@ -5,6 +5,7 @@ import random
 import string
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.contrib.auth.models import User
 from .models import Room, Player, Round, WolfList
@@ -19,6 +20,8 @@ def generate_unique_code(length=6):
 
 
 class CreateGameRoom(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         """
         Create a new game room.
@@ -43,7 +46,7 @@ class CreateGameRoom(APIView):
         )
 
         # Add the host as the first player
-        uid = code + "-" + user.id
+        uid = code + "-" + str(user.id)
         player = Player.objects.create(user=user, unique_id=uid)
         room.players.add(player)
 
@@ -56,6 +59,8 @@ class CreateGameRoom(APIView):
 
 
 class JoinGameRoom(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         """
         Join an existing game room using the room code.
@@ -74,7 +79,7 @@ class JoinGameRoom(APIView):
         if room.players.count() >= room.max_players:
             return Response({"error": "Room is full."}, status=status.HTTP_403_FORBIDDEN)
         
-        uid = room_code + "-" + user.id
+        uid = room_code + "-" + str(user.id)
 
         # Check if the user is already in the room
         if Player.objects.filter(user=user, unique_id=uid).exists():
@@ -90,11 +95,13 @@ class JoinGameRoom(APIView):
             "message": "Joined room successfully.",
             "room_code": room.code,
             "room_name": room.name,
-            "current_players": room.players.count(),
+            "current_players": list(room.players.values("id", "user__username")),
             "max_players": room.max_players,
         }, status=status.HTTP_200_OK)
 
 class LeaveGameRoom(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         """
         Leave a game room.
@@ -103,7 +110,7 @@ class LeaveGameRoom(APIView):
         """
         user = request.user  # Assuming the user is authenticated
         room_code = request.data.get("room_code")
-        uid = room_code + "-" + user.id
+        uid = room_code + "-" + str(user.id)
 
         if not room_code:
             return Response({"error": "Room code is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -142,8 +149,38 @@ class LeaveGameRoom(APIView):
             "room_code": room_code,
             "remaining_players": room.players.count()
         }, status=status.HTTP_200_OK)
+    
+class GetRoomDetails(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """
+        Get details of a specific room using the room code.
+        Returns room name, host, current players, and max players.
+        """
+        user = request.user
+        room_code = request.query_params.get("room_code")
+
+        if not room_code:
+            return Response({"error": "Room code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            room = Room.objects.get(code=room_code)
+        except Room.DoesNotExist:
+            return Response({"error": "Room not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response({
+            "room_code": room.code,
+            "room_name": room.name,
+            "host": room.host.username,
+            "current_players": list(room.players.values("id", "user__username")),
+            "max_players": room.max_players,
+            "created_at": room.created_at,
+        })
 
 class StartGame(APIView):
+    permission_classes = [IsAuthenticated]
+    
     def post(self, request):
         """
         Start the game for a specific room.
@@ -200,3 +237,39 @@ class StartGame(APIView):
             "num_players": players.count(),
             "num_rounds": players.count()
         }, status=status.HTTP_200_OK)
+
+class GameState(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """
+        Get the game statistics for a specific room.
+        Returns the current round, wolf, and player scores.
+        """
+        user = request.user
+        room_code = request.query_params.get("room_code")
+
+        if not room_code:
+            return Response({"error": "Room code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            room = Room.objects.get(code=room_code)
+        except Room.DoesNotExist:
+            return Response({"error": "Room not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        try:
+            game_state = GameState.objects.get(room=room)
+        except GameState.DoesNotExist:
+            return Response({"error": "Game state not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response({
+            "current_round": game_state.current_round,
+            "game_over": game_state.game_over,
+            "winner": game_state.winner.username if game_state.winner else None,
+            "wolfed_users": game_state.wolfed_users,
+            "players": list(room.players.values("id", "user__username", "score")),
+            "total_rounds": Round.objects.filter(room=room).count(),
+            "round_status": game_state.round_status,
+            "wolf_list": WolfList.objects.filter(room=room).values_list('wolfed_users', flat=True).first(),
+            "host": room.host.username,
+        })
