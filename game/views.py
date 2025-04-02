@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.contrib.auth.models import User
-from .models import Room, Player, Round, WolfList
+from .models import Room, Player, Round, Game
 
 
 def generate_unique_code(length=6):
@@ -210,8 +210,9 @@ class StartGame(APIView):
         if players.count() < 2:
             return Response({"error": "At least 2 players are required to start the game."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Initialize WolfList
-        wolf_list, created = WolfList.objects.get_or_create(room=room)
+        # Initialize Game
+        game = Game.objects.create(room=room, current_round=1, game_over=False, wolfed_users=[], round_status="waiting_to_start")
+        game.save()
 
         # Create Round models
         for i in range(1, players.count() + 1):
@@ -238,38 +239,5 @@ class StartGame(APIView):
             "num_rounds": players.count()
         }, status=status.HTTP_200_OK)
 
-class GameState(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        """
-        Get the game statistics for a specific room.
-        Returns the current round, wolf, and player scores.
-        """
-        user = request.user
-        room_code = request.query_params.get("room_code")
-
-        if not room_code:
-            return Response({"error": "Room code is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            room = Room.objects.get(code=room_code)
-        except Room.DoesNotExist:
-            return Response({"error": "Room not found."}, status=status.HTTP_404_NOT_FOUND)
         
-        try:
-            game_state = GameState.objects.get(room=room)
-        except GameState.DoesNotExist:
-            return Response({"error": "Game state not found."}, status=status.HTTP_404_NOT_FOUND)
         
-        return Response({
-            "current_round": game_state.current_round,
-            "game_over": game_state.game_over,
-            "winner": game_state.winner.username if game_state.winner else None,
-            "wolfed_users": game_state.wolfed_users,
-            "players": list(room.players.values("id", "user__username", "score")),
-            "total_rounds": Round.objects.filter(room=room).count(),
-            "round_status": game_state.round_status,
-            "wolf_list": WolfList.objects.filter(room=room).values_list('wolfed_users', flat=True).first(),
-            "host": room.host.username,
-        })

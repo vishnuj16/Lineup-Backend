@@ -27,14 +27,10 @@ class Round(models.Model):
     pack_score = models.IntegerField(default=0)
     round_number = models.IntegerField()
 
-class GameState(models.Model):
+class Game(models.Model):
     room = models.ForeignKey(Room, on_delete=models.CASCADE)
     current_round = models.IntegerField(default=1)
     game_over = models.BooleanField(default=False)
     winner = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     wolfed_users = models.JSONField(default=list)
-    round_status = models.CharField(max_length=50, default="waiting")  # waiting, in_progress, completed
-
-class WolfList(models.Model):
-    room = models.ForeignKey(Room, on_delete=models.CASCADE)
-    wolfed_users = models.JSONField(default=list)
+    round_status = models.CharField(max_length=50, default="waiting_to_start")  # waiting, in_progress, completed
