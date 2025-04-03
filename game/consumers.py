@@ -1,5 +1,6 @@
 # consumers.py
 import json
+import time
 from asgiref.sync import async_to_sync, sync_to_async
 from channels.generic.websocket import WebsocketConsumer
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
@@ -154,6 +155,9 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
             await self.close()
             return
 
+        self.last_ping = time.time()
+        self.is_connected = True
+        
         print("Connection accepted!")
         await self.accept()
 
@@ -167,19 +171,37 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
         )
     
     async def disconnect(self, close_code):
-        if not hasattr(self, 'user') or self.user.is_anonymous:
-            return
+        # Mark as disconnected to stop background tasks
+        self.is_connected = False
         
-        # Leave room group (Await directly)
+        # Leave room group
         await self.channel_layer.group_discard(
             self.room_group_name,
             self.channel_name
         )
+        
+        # Notify other users
+        user = self.scope.get('user')
+        if user and not user.is_anonymous:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'player_left',
+                    'username': user.username,
+                }
+            )
     
     
     async def receive_json(self, content):
         message_type = content.get('type')
         print("Received message: ", content)
+        
+        if message_type == 'ping':
+                self.last_ping = time.time()
+                await self.send(text_data=json.dumps({
+                    'type': 'pong'
+                }))
+                return
         
         if message_type == 'start_round':
             round_number = content.get('round_number')
@@ -204,7 +226,7 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
             print("Unknown message type:", message_type)
             # Handle unknown message type if necessary
             pass
-    
+
     @database_sync_to_async
     def get_room(self, room_code):
         return Room.objects.get(code=room_code)
