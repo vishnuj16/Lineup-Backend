@@ -248,7 +248,7 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
     
     @database_sync_to_async
     def update_player_scores(self, room, wolf_user, pack_score):
-        for player in room.players.exclude(user=wolf_user):
+        for player in room.players.exclude(user=wolf_user.wolf):
             player.score += pack_score
             player.save()
     
@@ -414,18 +414,14 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
                 return False
         
         return True
-
-    async def collect_game_statistics(self, room):
-        """Collect statistics for the game"""
-        players = await Player.objects.filter(room=room).all()
-        rounds = await Round.objects.filter(room=room).all()
-        
-        # Initialize statistics dictionary
+    
+    @database_sync_to_async
+    def collectactual_game_statistics(self, players, rounds):
         statistics = {
             'players': {},
             'round_data': [],
             'winners': [],
-            'total_rounds': len(rounds)
+            # 'total_rounds': roundlend
         }
         
         # Collect individual player scores
@@ -443,6 +439,8 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
                     player_stats['rounds_as_wolf'] += 1
                 else:
                     player_stats['round_scores'].append(round_obj.pack_score)
+            
+            statistics['players'][player.user.username] = player_stats
                
         
         # Collect round data
@@ -458,9 +456,19 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
         max_score = max([player.score for player in players])
         winners = [player.user.username for player in players if player.score == max_score]
         statistics['winners'] = winners
-        statistics['players'] = {player.user.username: player_stats for player, player_stats in zip(players, statistics['players'].values())}
+        # statistics['players'] = {player.user.username: player_stats for player, player_stats in zip(players, statistics['players'].values())}
         
         return statistics
+
+    async def collect_game_statistics(self, room):
+        """Collect statistics for the game"""
+        players = room.players.all()
+        rounds = Round.objects.filter(room=room).all()
+        # roundlend = await Round.objects.filter(room=room).count()
+        
+        statistics = await self.collectactual_game_statistics(players, rounds)
+        return statistics
+        
 
     # You'll also need to add a handler for the game_end_message
     async def game_end_message(self, event):
@@ -501,8 +509,11 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
         return current_round.wolf
     
     @database_sync_to_async
-    def get_first_user(self, players):
-        return players[0].user if players else None
+    def get_first_user(self, players, wolf_user):
+        if players[0].user != wolf_user:
+            return players[0].user
+        else:
+            return players[1].user
 
     async def submit_wolf_order(self, order, round_number):
         try:
@@ -516,7 +527,7 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
             # Now get players excluding the wolf
             players = await self.get_players_exclude_wolf(room, wolf_user)
             
-            submitter = await self.get_first_user(players)
+            submitter = await self.get_first_user(players, wolf_user)
 
             if not submitter:
                 await self.send_json({
@@ -573,14 +584,14 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
             game = await self.get_game(room)
             
             # Check if user is valid submitter using our async helper
-            valid_submitter = await self.check_valid_submitter(room, current_round, self.user)
+            # valid_submitter = await self.check_valid_submitter(room, current_round, self.user)
             
-            if not valid_submitter:
-                await self.send_json({
-                    'type': 'error',
-                    'message': 'You are not authorized to submit the pack order'
-                })
-                return
+            # if not valid_submitter:
+            #     await self.send_json({
+            #         'type': 'error',
+            #         'message': 'You are not authorized to submit the pack order'
+            #     })
+            #     return
             
             # Save the pack's ranking
             current_round.pack_ranking = order
@@ -599,7 +610,7 @@ class GameplayConsumer(AsyncJsonWebsocketConsumer):
             
             # Each pack member gets points equal to the pack score
             if pack_score > 0:
-                await self.update_player_scores(room, current_round.wolf, pack_score)
+                await self.update_player_scores(room, current_round, pack_score)
             
             # Wolf never gets points
 
